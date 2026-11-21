@@ -1,0 +1,17 @@
+<resources>
+    <!-- Tema claro. O escuro está em values-night. -->
+    <color name="bg">#F4F5F7</color>
+    <color name="card">#FFFFFF</color>
+    <color name="field">#E6E8EC</color>
+    <color name="text">#1B1D23</color>
+    <color name="muted">#6B7080</color>
+    <color name="accent">#B97A00</color>
+    <color name="border">#D3D6DC</color>
+    <color name="iconbg">#FFFFFF</color>
+    <color name="searchbox">#FFFFFF</color>
+    <color name="searchbox_text">#202124</color>
+    <color name="searchbox_hint">#70757A</color>
+    <color name="danger">#C62828</color>
+    <color name="incognito_bar">#3B2F5C</color>
+    <color name="ic_background">#1B1D23</color>
+</resources>
