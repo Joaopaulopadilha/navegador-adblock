@@ -8,7 +8,11 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.wifi.WifiManager
+import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.ServiceCompat
@@ -16,35 +20,38 @@ import androidx.core.app.ServiceCompat
 /**
  * Serviço em primeiro plano que mantém o app vivo enquanto um vídeo toca com a tela apagada ou em outro app.
  * Ele não toca nada: só segura o processo, a CPU e o Wi-Fi. O som continua vindo do próprio WebView.
- * A notificação mostra o título da página e tem os botões: voltar 10 s, tocar/pausar, avançar 10 s e encerrar o app.
+ * A notificação é de mídia: título da página, barra de tempo (arrastável) e os botões faixa anterior,
+ * tocar/pausar, próxima faixa e encerrar o app.
  */
 class PlaybackService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var session: MediaSession? = null
 
     private var title = ""
     private var playing = true
+    private var positionMs = 0L
+    private var durationMs = -1L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_QUIT -> {
-                sendBroadcast(Intent(ACTION_QUIT_APP).setPackage(packageName))
-                stopSelf()
+                quit()
                 return START_NOT_STICKY
             }
             ACTION_TOGGLE -> {
-                sendBroadcast(Intent(ACTION_TOGGLE_PAGE).setPackage(packageName))
+                toPage(ACTION_TOGGLE_PAGE)
                 return START_NOT_STICKY
             }
-            ACTION_BACK -> {
-                sendBroadcast(Intent(ACTION_SEEK_PAGE).setPackage(packageName).putExtra(EXTRA_SECONDS, -SEEK_SECONDS))
+            ACTION_PREV -> {
+                toPage(ACTION_PREV_PAGE)
                 return START_NOT_STICKY
             }
-            ACTION_FORWARD -> {
-                sendBroadcast(Intent(ACTION_SEEK_PAGE).setPackage(packageName).putExtra(EXTRA_SECONDS, SEEK_SECONDS))
+            ACTION_NEXT -> {
+                toPage(ACTION_NEXT_PAGE)
                 return START_NOT_STICKY
             }
         }
@@ -52,6 +59,8 @@ class PlaybackService : Service() {
         title = intent?.getStringExtra(EXTRA_TITLE).orEmpty()
         playing = true
         instance = this
+        ensureSession()
+        syncSession()
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -62,13 +71,83 @@ class PlaybackService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Chamado pela tela principal quando o título da página ou o estado (tocando/pausado) muda. */
-    private fun refresh(newTitle: String?, nowPlaying: Boolean?) {
+    private fun toPage(action: String, extra: (Intent.() -> Unit)? = null) {
+        sendBroadcast(Intent(action).setPackage(packageName).apply { extra?.invoke(this) })
+    }
+
+    private fun quit() {
+        toPage(ACTION_QUIT_APP)
+        stopSelf()
+    }
+
+    private fun ensureSession() {
+        if (session != null) return
+        session = MediaSession(this, "navegador").apply {
+            setCallback(object : MediaSession.Callback() {
+                override fun onPlay() {
+                    if (!playing) toPage(ACTION_TOGGLE_PAGE)
+                }
+
+                override fun onPause() {
+                    if (playing) toPage(ACTION_TOGGLE_PAGE)
+                }
+
+                override fun onSkipToNext() = toPage(ACTION_NEXT_PAGE)
+
+                override fun onSkipToPrevious() = toPage(ACTION_PREV_PAGE)
+
+                override fun onSeekTo(pos: Long) {
+                    positionMs = pos
+                    syncSession()
+                    toPage(ACTION_SEEK_PAGE) { putExtra(EXTRA_POSITION_MS, pos) }
+                }
+
+                override fun onCustomAction(action: String, extras: Bundle?) {
+                    if (action == CUSTOM_QUIT) quit()
+                }
+            })
+            isActive = true
+        }
+    }
+
+    /** Passa título, duração e posição para a sessão de mídia (é dela que vem a barra de tempo). */
+    private fun syncSession() {
+        val s = session ?: return
+        s.setMetadata(
+            MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title.ifBlank { "Reproduzindo em segundo plano" })
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, "Navegador")
+                .apply { if (durationMs > 0) putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs) }
+                .build()
+        )
+        var actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or
+            PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS
+        if (durationMs > 0) actions = actions or PlaybackState.ACTION_SEEK_TO
+        s.setPlaybackState(
+            PlaybackState.Builder()
+                .setActions(actions)
+                .setState(
+                    if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                    positionMs.coerceAtLeast(0),
+                    if (playing) 1f else 0f
+                )
+                .addCustomAction(
+                    PlaybackState.CustomAction.Builder(CUSTOM_QUIT, "Encerrar", R.drawable.ic_close).build()
+                )
+                .build()
+        )
+    }
+
+    /** Chamado pela tela principal quando o título, o estado ou a posição muda. */
+    private fun refresh(newTitle: String?, nowPlaying: Boolean?, pos: Long?, dur: Long?) {
         if (newTitle != null) title = newTitle
+        if (pos != null) positionMs = pos
+        if (dur != null) durationMs = dur
         if (nowPlaying != null && nowPlaying != playing) {
             playing = nowPlaying
             if (playing) acquireLocks() else releaseLocks()
         }
+        syncSession()
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
     }
 
@@ -93,6 +172,9 @@ class PlaybackService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val style = Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2)
+        session?.let { style.setMediaSession(it.sessionToken) }
+
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Reproduzindo em segundo plano" })
@@ -101,14 +183,14 @@ class PlaybackService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .addAction(action(1, R.drawable.ic_rewind, "Voltar 10 s", ACTION_BACK))
+            .addAction(action(1, R.drawable.ic_prev, "Faixa anterior", ACTION_PREV))
             .addAction(
                 if (playing) action(2, R.drawable.ic_pause, "Pausar", ACTION_TOGGLE)
                 else action(2, R.drawable.ic_play, "Tocar", ACTION_TOGGLE)
             )
-            .addAction(action(3, R.drawable.ic_forward, "Avançar 10 s", ACTION_FORWARD))
+            .addAction(action(3, R.drawable.ic_next, "Próxima faixa", ACTION_NEXT))
             .addAction(action(4, R.drawable.ic_close, "Encerrar", ACTION_QUIT))
-            .setStyle(Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2))
+            .setStyle(style)
             .build()
     }
 
@@ -146,25 +228,29 @@ class PlaybackService : Service() {
 
     override fun onDestroy() {
         releaseLocks()
+        session?.release()
+        session = null
         if (instance === this) instance = null
         super.onDestroy()
     }
 
     companion object {
         const val ACTION_TOGGLE = "com.pessoal.navegador.TOGGLE"
-        const val ACTION_BACK = "com.pessoal.navegador.BACK10"
-        const val ACTION_FORWARD = "com.pessoal.navegador.FORWARD10"
+        const val ACTION_PREV = "com.pessoal.navegador.PREV"
+        const val ACTION_NEXT = "com.pessoal.navegador.NEXT"
         const val ACTION_QUIT = "com.pessoal.navegador.QUIT"
 
         /** Mensagens enviadas ao MainActivity (broadcast restrito ao próprio app). */
         const val ACTION_TOGGLE_PAGE = "com.pessoal.navegador.TOGGLE_PAGE"
+        const val ACTION_PREV_PAGE = "com.pessoal.navegador.PREV_PAGE"
+        const val ACTION_NEXT_PAGE = "com.pessoal.navegador.NEXT_PAGE"
         const val ACTION_SEEK_PAGE = "com.pessoal.navegador.SEEK_PAGE"
         const val ACTION_QUIT_APP = "com.pessoal.navegador.QUIT_APP"
 
         const val EXTRA_TITLE = "title"
-        const val EXTRA_SECONDS = "seconds"
+        const val EXTRA_POSITION_MS = "position_ms"
 
-        private const val SEEK_SECONDS = 10
+        private const val CUSTOM_QUIT = "quit"
         private const val CHANNEL_ID = "playback"
         private const val NOTIFICATION_ID = 1
         private const val MAX_LOCK_MS = 4 * 60 * 60 * 1000L // segurança: solta sozinho após 4 h
@@ -174,7 +260,11 @@ class PlaybackService : Service() {
 
         /** Atualiza a notificação se o serviço estiver rodando (mesmo processo, sem passar por Intent). */
         fun update(title: String?, playing: Boolean?) {
-            instance?.refresh(title, playing)
+            instance?.refresh(title, playing, null, null)
+        }
+
+        fun updateProgress(positionMs: Long, durationMs: Long, playing: Boolean) {
+            instance?.refresh(null, playing, positionMs, durationMs)
         }
     }
 }

@@ -52,7 +52,24 @@
     };
   } catch (e) {}
 
-  document.addEventListener('playing', function (e) { if (e.target && e.target.tagName === 'VIDEO') notify('playing'); }, true);
+  // Posição e duração para a barra de tempo da notificação: "time:<posição ms>:<duração ms ou -1>:<1 tocando/0 parado>"
+  function reportTime(v, playing) {
+    try {
+      var d = v.duration;
+      notify('time:' + Math.round((v.currentTime || 0) * 1000) + ':' + (isFinite(d) ? Math.round(d * 1000) : -1) + ':' + (playing ? 1 : 0));
+    } catch (e) {}
+  }
+  ['seeked', 'durationchange', 'loadedmetadata'].forEach(function (type) {
+    document.addEventListener(type, function (e) {
+      if (e.target && e.target.tagName === 'VIDEO') reportTime(e.target, !e.target.paused);
+    }, true);
+  });
+  setInterval(function () {
+    var v = document.querySelector('video');
+    if (v && !v.paused) reportTime(v, true);
+  }, 4000);
+
+  document.addEventListener('playing', function (e) { if (e.target && e.target.tagName === 'VIDEO') { notify('playing'); reportTime(e.target, true); } }, true);
   document.addEventListener('pause', function (e) {
     var v = e.target;
     if (!v || v.tagName !== 'VIDEO') return;
@@ -69,8 +86,9 @@
       return;
     }
     notify('paused');
+    reportTime(v, false);
   }, true);
-  document.addEventListener('ended', function (e) { if (e.target && e.target.tagName === 'VIDEO') notify('paused'); }, true);
+  document.addEventListener('ended', function (e) { if (e.target && e.target.tagName === 'VIDEO') { notify('paused'); reportTime(e.target, false); } }, true);
   // ---- 1) Remove os campos de anúncio das respostas do player (a causa dos anúncios) ----
   var AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams'];
 

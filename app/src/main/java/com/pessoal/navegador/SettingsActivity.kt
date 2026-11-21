@@ -80,6 +80,10 @@ class SettingsActivity : ComponentActivity() {
             }
         }
 
+        toggle("Esconder as barras ao rolar", "A barra de endereço e a de botões saem da frente ao rolar para baixo e voltam ao rolar para cima", prefs.autoHideBars) {
+            prefs.autoHideBars = it
+        }
+
         // Página inicial
         section("Página inicial")
         val customUrl = EditText(this).apply {

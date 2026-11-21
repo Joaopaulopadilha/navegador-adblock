@@ -15,6 +15,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -44,6 +46,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.webkit.ProfileStore
+import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
@@ -53,6 +56,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var root: FrameLayout
     private lateinit var ui: View
     private lateinit var topBar: LinearLayout
+    private lateinit var bottomBar: View
     private lateinit var urlBar: EditText
     private lateinit var progress: ProgressBar
     private lateinit var btnBack: TextView
@@ -76,6 +80,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var settings: Prefs
     private lateinit var adBlocker: AdBlocker
     private lateinit var youtubeScript: String
+    private lateinit var unmuteScript: String
+
+    /** Frames (inclusive iframes) de cada aba que se apresentaram pelo canal "NvAudio", para tirar o mudo de todos. */
+    private val audioFrames = java.util.WeakHashMap<WebView, ArrayDeque<JavaScriptReplyProxy>>()
 
     /** As abas ficam em TabStore para sobreviverem à Activity ser recriada (ex.: troca de tema). */
     private val tabs get() = TabStore.tabs
@@ -106,6 +114,11 @@ class MainActivity : ComponentActivity() {
     private var bgEnabled = false
     private var mediaPlaying = false
     private var quitting = false
+
+    // Barras que somem ao rolar para baixo
+    private var barsHidden = false
+    private var barsToggledAt = 0L
+    private var scrollAccum = 0
     private val stopServiceRunnable = Runnable { stopBackgroundService() }
 
     private val notifPermission =
@@ -116,11 +129,12 @@ class MainActivity : ComponentActivity() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 PlaybackService.ACTION_TOGGLE_PAGE -> active.web?.evaluateJavascript(TOGGLE_JS, null)
+                PlaybackService.ACTION_NEXT_PAGE -> active.web?.evaluateJavascript(NEXT_JS, null)
+                PlaybackService.ACTION_PREV_PAGE -> active.web?.evaluateJavascript(PREV_JS, null)
                 PlaybackService.ACTION_SEEK_PAGE -> {
-                    val sec = intent.getIntExtra(PlaybackService.EXTRA_SECONDS, 0)
+                    val sec = intent.getLongExtra(PlaybackService.EXTRA_POSITION_MS, 0L) / 1000.0
                     active.web?.evaluateJavascript(
-                        "(function(){var v=document.querySelector('video');if(v){v.currentTime=Math.max(0,v.currentTime+($sec));}})();",
-                        null
+                        "(function(){var v=document.querySelector('video');if(v){v.currentTime=$sec;}})();", null
                     )
                 }
                 PlaybackService.ACTION_QUIT_APP -> quitApp()
@@ -142,6 +156,7 @@ class MainActivity : ComponentActivity() {
         root = findViewById(R.id.root)
         ui = findViewById(R.id.browser_ui)
         topBar = findViewById(R.id.top_bar)
+        bottomBar = findViewById(R.id.bottom_bar)
         urlBar = findViewById(R.id.url_bar)
         progress = findViewById(R.id.progress)
         btnBack = findViewById(R.id.btn_back)
@@ -162,7 +177,9 @@ class MainActivity : ComponentActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
             ui.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
+            // Consumidos aqui: se chegassem ao WebView, as páginas somariam esse espaço de novo
+            // (env(safe-area-inset-*)) e, por exemplo, a barra de baixo do YouTube ficaria enorme.
+            WindowInsetsCompat.CONSUMED
         }
 
         settings = Prefs(this)
@@ -170,6 +187,7 @@ class MainActivity : ComponentActivity() {
         adBlocker = AdBlocker(this)
         adBlocker.enabled = settings.adblockDefault
         youtubeScript = assets.open("youtube_adblock.js").bufferedReader().use { it.readText() }
+        unmuteScript = assets.open("unmute.js").bufferedReader().use { it.readText() }
         bgEnabled = settings.backgroundPlay
 
         startPage = StartPageView(
@@ -205,6 +223,8 @@ class MainActivity : ComponentActivity() {
             pageReceiver,
             IntentFilter().apply {
                 addAction(PlaybackService.ACTION_TOGGLE_PAGE)
+                addAction(PlaybackService.ACTION_NEXT_PAGE)
+                addAction(PlaybackService.ACTION_PREV_PAGE)
                 addAction(PlaybackService.ACTION_SEEK_PAGE)
                 addAction(PlaybackService.ACTION_QUIT_APP)
             },
@@ -287,6 +307,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun activate(tab: Tab) {
+        showBars()
         hideTabSwitcher()
         hideUrlSuggestions(clearFocus = true)
         // O som de uma aba não segue para a outra.
@@ -404,6 +425,7 @@ class MainActivity : ComponentActivity() {
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         configure(w, tab)
+        w.setOnScrollChangeListener { v, _, y, _, oldY -> onWebScroll(v, y, oldY) }
         tab.web = w
         return w
     }
@@ -468,7 +490,46 @@ class MainActivity : ComponentActivity() {
         btnTabs.text = if (tabs.size > 99) "99+" else tabs.size.toString()
     }
 
+    // ---------- Barras que somem ao rolar ----------
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun onWebScroll(v: View, y: Int, oldY: Int) {
+        if (v !== active.web || !settings.autoHideBars) return
+        if (SystemClock.uptimeMillis() - barsToggledAt < 400) return // a própria troca de tamanho mexe na rolagem
+        val dy = y - oldY
+        if (y <= dp(4)) {
+            scrollAccum = 0
+            showBars()
+            return
+        }
+        // Soma o movimento na mesma direção; inverter a direção zera a conta.
+        scrollAccum = if ((dy > 0) == (scrollAccum > 0) || scrollAccum == 0) scrollAccum + dy else dy
+        when {
+            scrollAccum > dp(28) && !barsHidden && !urlBar.hasFocus() && customView == null -> hideBars()
+            scrollAccum < -dp(14) && barsHidden -> showBars()
+        }
+    }
+
+    private fun hideBars() {
+        barsHidden = true
+        barsToggledAt = SystemClock.uptimeMillis()
+        scrollAccum = 0
+        topBar.visibility = View.GONE
+        bottomBar.visibility = View.GONE
+    }
+
+    private fun showBars() {
+        if (!barsHidden) return
+        barsHidden = false
+        barsToggledAt = SystemClock.uptimeMillis()
+        scrollAccum = 0
+        topBar.visibility = View.VISIBLE
+        bottomBar.visibility = View.VISIBLE
+    }
+
     private fun showTabSwitcher() {
+        showBars()
         hideUrlSuggestions(clearFocus = true)
         tabSwitcher.render(tabs, active.id)
         tabSwitcherBox.visibility = View.VISIBLE
@@ -515,9 +576,22 @@ class MainActivity : ComponentActivity() {
                 when {
                     data == "playing" -> onMedia(true)
                     data == "paused" -> onMedia(false)
+                    data.startsWith("time:") -> onTime(data)
                     data.startsWith("diag:") -> android.util.Log.i("NvDiag", data.removePrefix("diag:"))
                 }
             }
+        }
+
+        // Volume +: tira do mudo vídeos de qualquer site (inclusive dentro de iframes). O canal só guarda a "resposta" do frame.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            WebViewCompat.addWebMessageListener(w, "NvAudio", setOf("*")) { view, _, _, _, reply ->
+                val list = audioFrames.getOrPut(view) { ArrayDeque() }
+                if (list.size >= MAX_AUDIO_FRAMES) list.removeFirst()
+                list.addLast(reply)
+            }
+            WebViewCompat.addDocumentStartJavaScript(w, unmuteScript, setOf("*"))
         }
 
         // O ideal é rodar o script antes de qualquer código da página (necessário para limpar o player).
@@ -547,6 +621,8 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                audioFrames[view]?.clear() // os frames da página anterior não existem mais
+                if (tab === active) showBars()
                 newPage(tab, url)
                 showUrl(tab, url)
                 // Plano B se o navegador não suportar script de início de documento.
@@ -712,6 +788,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showStart() {
+        showBars()
         val t = active
         t.showStart = true
         t.url = ""
@@ -849,6 +926,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** "time:<posição ms>:<duração ms ou -1>:<1 tocando/0 parado>" vindo da página. */
+    private fun onTime(data: String) {
+        val p = data.split(':')
+        if (p.size < 4) return
+        val pos = p[1].toLongOrNull() ?: return
+        val dur = p[2].toLongOrNull() ?: return
+        PlaybackService.updateProgress(pos, dur, p[3] == "1")
+    }
+
     private fun mediaTitle(): String =
         active.web?.title.orEmpty().removeSuffix(" - YouTube").ifBlank { active.title.removeSuffix(" - YouTube") }
 
@@ -937,11 +1023,29 @@ class MainActivity : ComponentActivity() {
             return
         }
         active.web?.evaluateJavascript(BG_OFF_JS, null)
+        if (!settings.autoHideBars) showBars()
         // Voltando das configurações: relê o que pode ter mudado.
         bgEnabled = settings.backgroundPlay
         updateBgButton()
         if (active.showStart) startPage.refresh()
         updateNav()
+    }
+
+    /** Botão de volume +: além de subir o volume do aparelho, tira do mudo o vídeo da aba ativa. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) unmuteActive()
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun unmuteActive() {
+        val w = active.web ?: return
+        w.evaluateJavascript("window.__nvUnmute&&window.__nvUnmute()", null)
+        audioFrames[w]?.toList()?.forEach {
+            try {
+                it.postMessage("unmute")
+            } catch (_: Exception) {
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -985,12 +1089,27 @@ class MainActivity : ComponentActivity() {
         private const val MENU_NEW_TAB = 2
         private const val MENU_NEW_INCOGNITO = 3
         private const val MENU_SETTINGS = 4
+        private const val MAX_AUDIO_FRAMES = 40
         private const val PAUSED_KEEP_MS = 10 * 60_000L
 
         // Os botões da notificação são pedidos do usuário: liberam a pausa por um instante.
         private const val TOGGLE_JS =
             "(function(){var v=document.querySelector('video');if(!v)return;window.__nvAllowPause=true;" +
                 "if(v.paused){v.play();}else{v.pause();}setTimeout(function(){window.__nvAllowPause=false;},800);})();"
+        // Próxima faixa: botão "próximo" do player; sem ele, abre o primeiro vídeo sugerido.
+        private const val NEXT_JS =
+            "(function(){function vis(e){return e&&e.offsetParent!==null&&!e.disabled&&e.getAttribute('aria-disabled')!=='true';}" +
+                "var b=document.querySelector('.ytp-next-button');if(vis(b)){b.click();return;}" +
+                "var cur=new URLSearchParams(location.search).get('v');" +
+                "var as=document.querySelectorAll('a[href*=\"/watch?v=\"]');" +
+                "for(var i=0;i<as.length;i++){var h=as[i].getAttribute('href')||'';" +
+                "var m=h.match(/[?&]v=([^&]+)/);if(m&&m[1]!==cur&&as[i].offsetParent!==null){as[i].click();return;}}})();"
+
+        // Faixa anterior: botão "anterior" do player; sem ele, volta ao início e, já no início, à página anterior.
+        private const val PREV_JS =
+            "(function(){var b=document.querySelector('.ytp-prev-button');" +
+                "if(b&&b.offsetParent!==null&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){b.click();return;}" +
+                "var v=document.querySelector('video');if(v&&v.currentTime>3){v.currentTime=0;return;}history.back();})();"
         private const val BG_ON_JS = "window.__nvBg=true;window.__nvBgSince=Date.now();window.__nvResumes=0;"
         private const val BG_OFF_JS = "window.__nvBg=false;"
     }

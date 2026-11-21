@@ -44,6 +44,11 @@ class Prefs(context: Context) {
             ?: ThemeUtil.SYSTEM
         set(v) = sp.edit().putString("theme_mode", v).apply()
 
+    /** Esconde a barra de endereço e a de botões ao rolar a página para baixo (como o Chrome). */
+    var autoHideBars: Boolean
+        get() = sp.getBoolean("auto_hide_bars", true)
+        set(v) = sp.edit().putBoolean("auto_hide_bars", v).apply()
+
     var autoUpdateCheck: Boolean
         get() = sp.getBoolean("auto_update_check", true)
         set(v) = sp.edit().putBoolean("auto_update_check", v).apply()
