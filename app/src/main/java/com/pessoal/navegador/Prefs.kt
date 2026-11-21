@@ -44,6 +44,14 @@ class Prefs(context: Context) {
             ?: ThemeUtil.SYSTEM
         set(v) = sp.edit().putString("theme_mode", v).apply()
 
+    var autoUpdateCheck: Boolean
+        get() = sp.getBoolean("auto_update_check", true)
+        set(v) = sp.edit().putBoolean("auto_update_check", v).apply()
+
+    var lastUpdateCheck: Long
+        get() = sp.getLong("last_update_check", 0L)
+        set(v) = sp.edit().putLong("last_update_check", v).apply()
+
     // ---------- Site para computador (lembrado por site) ----------
 
     fun isDesktopSite(host: String): Boolean =

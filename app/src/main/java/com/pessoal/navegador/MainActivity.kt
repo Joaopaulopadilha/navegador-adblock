@@ -204,6 +204,8 @@ class MainActivity : ComponentActivity() {
 
         setupControls()
 
+        if (savedInstanceState == null) Updater.check(this, settings, manual = false)
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {

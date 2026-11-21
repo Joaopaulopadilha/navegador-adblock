@@ -154,6 +154,16 @@ class SettingsActivity : ComponentActivity() {
             }
         })
 
+        // Atualização
+        section("Atualização")
+        toggle("Verificar atualizações sozinho", "Consulta o GitHub no máximo uma vez por dia ao abrir o app", prefs.autoUpdateCheck) {
+            prefs.autoUpdateCheck = it
+        }
+        column.addView(Button(this).apply {
+            text = "Verificar atualização (versão ${Updater.currentVersion(context)})"
+            setOnClickListener { Updater.check(this@SettingsActivity, prefs, manual = true) }
+        })
+
         column.addView(TextView(this).apply {
             text = "As mudanças valem na hora, exceto o bloqueio ligado ao abrir (vale na próxima abertura)."
             textSize = 12f
