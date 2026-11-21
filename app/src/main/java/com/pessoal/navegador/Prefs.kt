@@ -27,7 +27,7 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putString("search_engine", v).apply()
 
     var backgroundPlay: Boolean
-        get() = sp.getBoolean("background_play", true)
+        get() = sp.getBoolean("background_play", false)
         set(v) = sp.edit().putBoolean("background_play", v).apply()
 
     var adblockDefault: Boolean

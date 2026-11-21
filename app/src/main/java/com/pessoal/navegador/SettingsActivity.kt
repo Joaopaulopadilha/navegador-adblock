@@ -1,4 +1,4 @@
-package com.pessoal.navegador
+﻿package com.pessoal.navegador
 
 import android.content.Context
 import android.graphics.Typeface
@@ -134,7 +134,7 @@ class SettingsActivity : ComponentActivity() {
 
         // Reprodução
         section("Reprodução")
-        toggle("Tocar em segundo plano", "Mantém o som com a tela apagada ou em outro app", prefs.backgroundPlay) {
+        toggle("Tocar em segundo plano", "Mantém o som com a tela apagada ou em outro app, com notificação de controles (desligado por padrão)", prefs.backgroundPlay) {
             prefs.backgroundPlay = it
         }
 

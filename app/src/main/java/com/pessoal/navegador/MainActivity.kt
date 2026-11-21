@@ -1,4 +1,4 @@
-package com.pessoal.navegador
+﻿package com.pessoal.navegador
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -103,8 +103,9 @@ class MainActivity : ComponentActivity() {
     private var lastShownUrl = ""
 
     // Segundo plano (refere-se à aba ativa)
-    private var bgEnabled = true
+    private var bgEnabled = false
     private var mediaPlaying = false
+    private var quitting = false
     private val stopServiceRunnable = Runnable { stopBackgroundService() }
 
     private val notifPermission =
@@ -115,7 +116,14 @@ class MainActivity : ComponentActivity() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 PlaybackService.ACTION_TOGGLE_PAGE -> active.web?.evaluateJavascript(TOGGLE_JS, null)
-                PlaybackService.ACTION_PAUSE_PAGE -> active.web?.evaluateJavascript(PAUSE_JS, null)
+                PlaybackService.ACTION_SEEK_PAGE -> {
+                    val sec = intent.getIntExtra(PlaybackService.EXTRA_SECONDS, 0)
+                    active.web?.evaluateJavascript(
+                        "(function(){var v=document.querySelector('video');if(v){v.currentTime=Math.max(0,v.currentTime+($sec));}})();",
+                        null
+                    )
+                }
+                PlaybackService.ACTION_QUIT_APP -> quitApp()
             }
         }
     }
@@ -197,7 +205,8 @@ class MainActivity : ComponentActivity() {
             pageReceiver,
             IntentFilter().apply {
                 addAction(PlaybackService.ACTION_TOGGLE_PAGE)
-                addAction(PlaybackService.ACTION_PAUSE_PAGE)
+                addAction(PlaybackService.ACTION_SEEK_PAGE)
+                addAction(PlaybackService.ACTION_QUIT_APP)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
@@ -575,6 +584,7 @@ class MainActivity : ComponentActivity() {
 
             override fun onReceivedTitle(view: WebView, title: String?) {
                 tab.title = title.orEmpty()
+                if (tab === active && mediaPlaying) PlaybackService.update(mediaTitle(), null)
             }
 
             /**
@@ -833,14 +843,27 @@ class MainActivity : ComponentActivity() {
         if (playing) {
             startBackgroundService()
         } else {
-            // Espera um pouco: ao trocar de vídeo há uma pausa curta e o serviço não deve cair nesse intervalo.
-            main.postDelayed(stopServiceRunnable, STOP_DELAY_MS)
+            // Pausado: a notificação continua (para dar play de novo) e só some depois de um tempo parado.
+            PlaybackService.update(mediaTitle(), false)
+            main.postDelayed(stopServiceRunnable, PAUSED_KEEP_MS)
         }
+    }
+
+    private fun mediaTitle(): String =
+        active.web?.title.orEmpty().removeSuffix(" - YouTube").ifBlank { active.title.removeSuffix(" - YouTube") }
+
+    /** Botão "Encerrar" da notificação: fecha o app e o tira da lista de recentes. */
+    private fun quitApp() {
+        quitting = true
+        saveTabs()
+        main.removeCallbacks(stopServiceRunnable)
+        stopBackgroundService()
+        finishAndRemoveTask()
     }
 
     private fun startBackgroundService() {
         if (!bgEnabled) return
-        val title = active.web?.title.orEmpty().removeSuffix(" - YouTube").ifBlank { "Reproduzindo" }
+        val title = mediaTitle().ifBlank { "Reproduzindo" }
         try {
             ContextCompat.startForegroundService(
                 this,
@@ -945,7 +968,14 @@ class MainActivity : ComponentActivity() {
             }
             t.web = null
         }
+        // "Encerrar": as abas (inclusive as anônimas) não ficam na memória para a próxima abertura.
+        if (quitting) {
+            tabs.clear()
+            TabStore.activeId = -1
+        }
         super.onDestroy()
+        // Encerrar de verdade: sem processo sobrando em segundo plano.
+        if (quitting) android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     companion object {
@@ -955,15 +985,12 @@ class MainActivity : ComponentActivity() {
         private const val MENU_NEW_TAB = 2
         private const val MENU_NEW_INCOGNITO = 3
         private const val MENU_SETTINGS = 4
-        private const val STOP_DELAY_MS = 20_000L
+        private const val PAUSED_KEEP_MS = 10 * 60_000L
 
         // Os botões da notificação são pedidos do usuário: liberam a pausa por um instante.
         private const val TOGGLE_JS =
             "(function(){var v=document.querySelector('video');if(!v)return;window.__nvAllowPause=true;" +
                 "if(v.paused){v.play();}else{v.pause();}setTimeout(function(){window.__nvAllowPause=false;},800);})();"
-        private const val PAUSE_JS =
-            "(function(){var v=document.querySelector('video');if(!v)return;window.__nvAllowPause=true;" +
-                "if(!v.paused){v.pause();}setTimeout(function(){window.__nvAllowPause=false;},800);})();"
         private const val BG_ON_JS = "window.__nvBg=true;window.__nvBgSince=Date.now();window.__nvResumes=0;"
         private const val BG_OFF_JS = "window.__nvBg=false;"
     }
