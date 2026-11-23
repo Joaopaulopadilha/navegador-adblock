@@ -510,6 +510,9 @@ class MainActivity : ComponentActivity() {
         val idx = tabs.indexOf(tab)
         if (idx < 0) return
         val wasActive = tab === active
+        // Vídeo em tela cheia pertence à aba ativa: sai da tela cheia ANTES de destruir a página, senão o vídeo fica
+        // preso na tela (travada em paisagem, sem barras) e o app congela ou fica branco.
+        if (wasActive && customView != null) exitFullscreen()
         tab.web?.let {
             webHolder.removeView(it)
             it.destroy()
