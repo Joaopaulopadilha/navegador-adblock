@@ -30,6 +30,7 @@ class PlaybackService : Service() {
     private var session: MediaSession? = null
 
     private var title = ""
+    private var artist = ""
     private var playing = true
     private var positionMs = 0L
     private var durationMs = -1L
@@ -57,6 +58,7 @@ class PlaybackService : Service() {
         }
 
         title = intent?.getStringExtra(EXTRA_TITLE).orEmpty()
+        artist = intent?.getStringExtra(EXTRA_ARTIST).orEmpty()
         playing = true
         instance = this
         ensureSession()
@@ -116,7 +118,7 @@ class PlaybackService : Service() {
         s.setMetadata(
             MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title.ifBlank { "Reproduzindo em segundo plano" })
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, "Navegador")
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist.ifBlank { "Navegador" })
                 .apply { if (durationMs > 0) putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs) }
                 .build()
         )
@@ -139,8 +141,9 @@ class PlaybackService : Service() {
     }
 
     /** Chamado pela tela principal quando o título, o estado ou a posição muda. */
-    private fun refresh(newTitle: String?, nowPlaying: Boolean?, pos: Long?, dur: Long?) {
+    private fun refresh(newTitle: String?, nowPlaying: Boolean?, pos: Long?, dur: Long?, newArtist: String? = null) {
         if (newTitle != null) title = newTitle
+        if (newArtist != null) artist = newArtist
         if (pos != null) positionMs = pos
         if (dur != null) durationMs = dur
         if (nowPlaying != null && nowPlaying != playing) {
@@ -178,7 +181,7 @@ class PlaybackService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Reproduzindo em segundo plano" })
-            .setContentText(if (playing) "Navegador · tocando" else "Navegador · pausado")
+            .setContentText(artist.ifBlank { if (playing) "Navegador · tocando" else "Navegador · pausado" })
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -248,6 +251,7 @@ class PlaybackService : Service() {
         const val ACTION_QUIT_APP = "com.pessoal.navegador.QUIT_APP"
 
         const val EXTRA_TITLE = "title"
+        const val EXTRA_ARTIST = "artist"
         const val EXTRA_POSITION_MS = "position_ms"
 
         private const val CUSTOM_QUIT = "quit"
@@ -261,6 +265,11 @@ class PlaybackService : Service() {
         /** Atualiza a notificação se o serviço estiver rodando (mesmo processo, sem passar por Intent). */
         fun update(title: String?, playing: Boolean?) {
             instance?.refresh(title, playing, null, null)
+        }
+
+        /** Título e artista da faixa, vindos da página (MediaSession). */
+        fun updateMeta(title: String, artist: String) {
+            instance?.refresh(title, null, null, null, artist)
         }
 
         fun updateProgress(positionMs: Long, durationMs: Long, playing: Boolean) {

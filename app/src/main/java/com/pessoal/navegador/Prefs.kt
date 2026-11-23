@@ -62,6 +62,14 @@ class Prefs(context: Context) {
     fun isDesktopSite(host: String): Boolean =
         (sp.getStringSet("desktop_sites", emptySet()) ?: emptySet()).contains(siteKey(host))
 
+    /** Esquece todos os sites lembrados em modo computador. */
+    fun clearDesktopSites() = sp.edit().remove("desktop_sites").apply()
+
+    /** Instante da última limpeza de dados de navegação; a tela principal recarrega as abas quando muda. */
+    var dataClearedAt: Long
+        get() = sp.getLong("data_cleared_at", 0L)
+        set(v) = sp.edit().putLong("data_cleared_at", v).apply()
+
     fun setDesktopSite(host: String, on: Boolean) {
         val set = (sp.getStringSet("desktop_sites", emptySet()) ?: emptySet()).toMutableSet()
         if (on) set.add(siteKey(host)) else set.remove(siteKey(host))

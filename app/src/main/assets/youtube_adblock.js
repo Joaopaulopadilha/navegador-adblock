@@ -66,10 +66,38 @@
   });
   setInterval(function () {
     var v = document.querySelector('video');
-    if (v && !v.paused) reportTime(v, true);
+    if (v && !v.paused) { reportTime(v, true); reportMeta(); }
   }, 4000);
 
-  document.addEventListener('playing', function (e) { if (e.target && e.target.tagName === 'VIDEO') { notify('playing'); reportTime(e.target, true); } }, true);
+  // Controles de mídia que a própria página registra (próxima/anterior etc.): guardados para o app poder acioná-los.
+  try {
+    var ms = navigator.mediaSession;
+    if (ms && ms.setActionHandler) {
+      window.__nvMs = {};
+      var origSet = ms.setActionHandler.bind(ms);
+      ms.setActionHandler = function (action, handler) {
+        try { window.__nvMs[action] = handler; } catch (e) {}
+        return origSet(action, handler);
+      };
+    }
+  } catch (e) {}
+
+  // Título e artista da faixa: "meta:<título><US><artista>". O YouTube Music os coloca no MediaSession.
+  function reportMeta() {
+    try {
+      var md = navigator.mediaSession && navigator.mediaSession.metadata;
+      var t = md && md.title, a = md && md.artist;
+      if (!t) {
+        var te = document.querySelector('ytmusic-player-bar .title');
+        var be = document.querySelector('ytmusic-player-bar .byline');
+        if (te) t = te.textContent;
+        if (be) a = be.textContent;
+      }
+      if (t) notify('meta:' + String(t).trim() + '\u001f' + String(a || '').trim());
+    } catch (e) {}
+  }
+
+  document.addEventListener('playing', function (e) { if (e.target && e.target.tagName === 'VIDEO') { notify('playing'); reportTime(e.target, true); reportMeta(); } }, true);
   document.addEventListener('pause', function (e) {
     var v = e.target;
     if (!v || v.tagName !== 'VIDEO') return;

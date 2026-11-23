@@ -1,10 +1,15 @@
 ﻿package com.pessoal.navegador
 
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
+import android.webkit.CookieManager
+import android.webkit.WebStorage
+import android.webkit.WebView
+import android.webkit.WebViewDatabase
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -158,6 +163,19 @@ class SettingsActivity : ComponentActivity() {
             }
         })
 
+        // Privacidade
+        section("Privacidade")
+        column.addView(Button(this).apply {
+            text = "Limpar dados de navegação…"
+            setOnClickListener { showClearDialog() }
+        })
+        column.addView(TextView(this).apply {
+            text = "Apaga logins (cookies), dados guardados pelos sites e arquivos em cache. As abas abertas são recarregadas."
+            textSize = 12f
+            setTextColor(cMuted)
+            setPadding(0, dp(4), 0, 0)
+        })
+
         // Atualização
         section("Atualização")
         toggle("Verificar atualizações sozinho", "Consulta o GitHub no máximo uma vez por dia ao abrir o app", prefs.autoUpdateCheck) {
@@ -174,6 +192,48 @@ class SettingsActivity : ComponentActivity() {
             setTextColor(cMuted)
             setPadding(0, dp(24), 0, 0)
         })
+    }
+
+    /** Escolhe o que apagar, como no "Limpar dados de navegação" do Chrome. */
+    private fun showClearDialog() {
+        val labels = arrayOf(
+            "Cookies e dados de sites (logins, preferências)",
+            "Imagens e arquivos em cache",
+            "Pesquisas recentes",
+            "Sites lembrados em modo computador"
+        )
+        val checked = booleanArrayOf(true, true, true, false)
+        AlertDialog.Builder(this)
+            .setTitle("Limpar dados de navegação")
+            .setMultiChoiceItems(labels, checked) { _, i, on -> checked[i] = on }
+            .setPositiveButton("Limpar") { _, _ -> clearData(checked) }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun clearData(what: BooleanArray) {
+        if (!what.any { it }) return
+        var web = false
+        if (what[0]) {
+            val cookies = CookieManager.getInstance()
+            cookies.removeAllCookies { cookies.flush() }
+            cookies.flush()
+            WebStorage.getInstance().deleteAllData() // localStorage, IndexedDB etc.
+            WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword()
+            web = true
+        }
+        if (what[1]) {
+            WebView(this).apply {
+                clearCache(true)
+                destroy()
+            }
+            web = true
+        }
+        if (what[2]) prefs.clearSearches()
+        if (what[3]) prefs.clearDesktopSites()
+        if (web) prefs.dataClearedAt = System.currentTimeMillis()
+        Toast.makeText(this, "Dados apagados", Toast.LENGTH_SHORT).show()
     }
 
     private fun section(title: String) {

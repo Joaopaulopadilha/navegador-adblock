@@ -105,6 +105,7 @@ class MainActivity : ComponentActivity() {
     // Tema aplicado nesta tela (para recriar se mudar nas configurações)
     private var appliedTheme = ThemeUtil.SYSTEM
     private var lastNightMode = 0
+    private var seenClearedAt = 0L
 
     // Último endereço mostrado na barra (para distinguir "texto digitado" de "endereço da página")
     private var lastShownUrl = ""
@@ -181,6 +182,7 @@ class MainActivity : ComponentActivity() {
 
         settings = Prefs(this)
         appliedTheme = settings.themeMode
+        seenClearedAt = settings.dataClearedAt
         lastNightMode = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
         // Uma orientação travada por uma tela cheia anterior não deve valer numa tela nova
         // (a tela pode ter ficado em paisagem se o app foi fechado em tela cheia).
@@ -320,6 +322,8 @@ class MainActivity : ComponentActivity() {
         hideUrlSuggestions(clearFocus = true)
         // O som de uma aba não segue para a outra.
         mediaPlaying = false
+        metaTitle = ""
+        metaArtist = ""
         main.removeCallbacks(stopServiceRunnable)
         stopBackgroundService()
 
@@ -678,6 +682,7 @@ class MainActivity : ComponentActivity() {
                     data == "playing" -> onMedia(true)
                     data == "paused" -> onMedia(false)
                     data.startsWith("time:") -> onTime(data)
+                    data.startsWith("meta:") -> onMeta(data)
                     data.startsWith("diag:") -> android.util.Log.i("NvDiag", data.removePrefix("diag:"))
                 }
             }
@@ -1018,8 +1023,23 @@ class MainActivity : ComponentActivity() {
         PlaybackService.updateProgress(pos, dur, p[3] == "1")
     }
 
-    private fun mediaTitle(): String =
+    /** Título e artista da faixa informados pela página; têm prioridade sobre o título da aba. */
+    private var metaTitle = ""
+    private var metaArtist = ""
+
+    /** "meta:<título><US><artista>" vindo da página. */
+    private fun onMeta(data: String) {
+        val parts = data.removePrefix("meta:").split('\u001f')
+        val t = parts.getOrNull(0).orEmpty().trim()
+        if (t.isEmpty()) return
+        metaTitle = t
+        metaArtist = parts.getOrNull(1).orEmpty().trim()
+        PlaybackService.updateMeta(metaTitle, metaArtist)
+    }
+
+    private fun mediaTitle(): String = metaTitle.ifBlank {
         active.web?.title.orEmpty().removeSuffix(" - YouTube").ifBlank { active.title.removeSuffix(" - YouTube") }
+    }
 
     /** Botão "Encerrar" da notificação: fecha o app e o tira da lista de recentes. */
     private fun quitApp() {
@@ -1036,7 +1056,9 @@ class MainActivity : ComponentActivity() {
         try {
             ContextCompat.startForegroundService(
                 this,
-                Intent(this, PlaybackService::class.java).putExtra(PlaybackService.EXTRA_TITLE, title)
+                Intent(this, PlaybackService::class.java)
+                    .putExtra(PlaybackService.EXTRA_TITLE, title)
+                    .putExtra(PlaybackService.EXTRA_ARTIST, metaArtist)
             )
         } catch (_: Exception) {
             // O Android só deixa iniciar o serviço com o app visível; se não deu, o som segue enquanto o processo viver.
@@ -1145,6 +1167,14 @@ class MainActivity : ComponentActivity() {
         }
         active.web?.evaluateJavascript(BG_OFF_JS, null)
         if (!settings.autoHideBars) showBars()
+        // Dados de navegação foram apagados nas configurações: as páginas abertas deixam de mostrar o que estava logado.
+        if (settings.dataClearedAt != seenClearedAt) {
+            seenClearedAt = settings.dataClearedAt
+            for (t in tabs) t.web?.let { w ->
+                w.clearCache(true)
+                w.reload()
+            }
+        }
         // Voltando das configurações: relê o que pode ter mudado.
         bgEnabled = settings.backgroundPlay
         updateBgButton()
@@ -1219,20 +1249,25 @@ class MainActivity : ComponentActivity() {
         private const val TOGGLE_JS =
             "(function(){var v=document.querySelector('video');if(!v)return;window.__nvAllowPause=true;" +
                 "if(v.paused){v.play();}else{v.pause();}setTimeout(function(){window.__nvAllowPause=false;},800);})();"
-        // Próxima faixa: botão "próximo" do player; sem ele, abre o primeiro vídeo sugerido.
+        // Próxima faixa: controle que a página registra no MediaSession; depois os botões do player do YouTube
+        // e do YouTube Music; sem eles, abre o primeiro vídeo sugerido.
         private const val NEXT_JS =
-            "(function(){function vis(e){return e&&e.offsetParent!==null&&!e.disabled&&e.getAttribute('aria-disabled')!=='true';}" +
-                "var b=document.querySelector('.ytp-next-button');if(vis(b)){b.click();return;}" +
+            "(function(){var h=window.__nvMs&&window.__nvMs.nexttrack;if(h){try{h({action:'nexttrack'});return;}catch(e){}}" +
+                "function pick(q){var l=document.querySelectorAll(q);for(var i=0;i<l.length;i++){var r=l[i].getBoundingClientRect();if(r.width>0&&r.height>0&&l[i].getAttribute('aria-disabled')!=='true'&&!l[i].disabled)return l[i];}return null;}" +
+                "var b=pick('.ytp-next-button'+(location.host==='music.youtube.com'?',.next-button':''));if(b){(b.querySelector('button')||b).click();return;}" +
                 "var cur=new URLSearchParams(location.search).get('v');" +
                 "var as=document.querySelectorAll('a[href*=\"/watch?v=\"]');" +
-                "for(var i=0;i<as.length;i++){var h=as[i].getAttribute('href')||'';" +
-                "var m=h.match(/[?&]v=([^&]+)/);if(m&&m[1]!==cur&&as[i].offsetParent!==null){as[i].click();return;}}})();"
+                "for(var i=0;i<as.length;i++){var u=as[i].getAttribute('href')||'';" +
+                "var m=u.match(/[?&]v=([^&]+)/);if(m&&m[1]!==cur&&as[i].offsetParent!==null){as[i].click();return;}}})();"
 
-        // Faixa anterior: botão "anterior" do player; sem ele, volta ao início e, já no início, à página anterior.
+        // Faixa anterior: controle registrado no MediaSession ou botão do player; sem eles, volta ao início do vídeo e,
+        // já no início, à página anterior.
         private const val PREV_JS =
-            "(function(){var b=document.querySelector('.ytp-prev-button');" +
-                "if(b&&b.offsetParent!==null&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){b.click();return;}" +
+            "(function(){var h=window.__nvMs&&window.__nvMs.previoustrack;if(h){try{h({action:'previoustrack'});return;}catch(e){}}" +
+                "function pick(q){var l=document.querySelectorAll(q);for(var i=0;i<l.length;i++){var r=l[i].getBoundingClientRect();if(r.width>0&&r.height>0&&l[i].getAttribute('aria-disabled')!=='true'&&!l[i].disabled)return l[i];}return null;}" +
+                "var b=pick('.ytp-prev-button'+(location.host==='music.youtube.com'?',.previous-button':''));if(b){(b.querySelector('button')||b).click();return;}" +
                 "var v=document.querySelector('video');if(v&&v.currentTime>3){v.currentTime=0;return;}history.back();})();"
+
         // Largura e altura reais do vídeo que está em tela cheia (ou, se não achar, do que está tocando): "1080x1920".
         private const val VIDEO_SIZE_JS =
             "(function(){var f=document.fullscreenElement||document.webkitFullscreenElement;var v=null;" +
