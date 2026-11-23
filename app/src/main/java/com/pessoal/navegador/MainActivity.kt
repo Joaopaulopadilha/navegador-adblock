@@ -1038,7 +1038,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun mediaTitle(): String = metaTitle.ifBlank {
-        active.web?.title.orEmpty().removeSuffix(" - YouTube").ifBlank { active.title.removeSuffix(" - YouTube") }
+        active.web?.title.orEmpty().removeSuffix(" - YouTube").removeSuffix(" | YouTube Music")
+            .ifBlank { active.title.removeSuffix(" - YouTube").removeSuffix(" | YouTube Music") }
     }
 
     /** Botão "Encerrar" da notificação: fecha o app e o tira da lista de recentes. */

@@ -89,8 +89,10 @@
       var t = md && md.title, a = md && md.artist;
       if (!t) {
         var te = document.querySelector('ytmusic-player-bar .title');
-        var be = document.querySelector('ytmusic-player-bar .byline');
+        var be = document.querySelector('ytmusic-player-bar .byline, ytmusic-player-page .byline-wrapper .byline, ytmusic-player-page yt-formatted-string.byline');
         if (te) t = te.textContent;
+        // Sem a barra do player, o título certo da faixa está no título da página ("Música | YouTube Music").
+        else if (document.querySelector('ytmusic-player-page')) t = document.title.replace(/ \| YouTube Music$/, '');
         if (be) a = be.textContent;
       }
       if (t) notify('meta:' + String(t).trim() + '\u001f' + String(a || '').trim());
