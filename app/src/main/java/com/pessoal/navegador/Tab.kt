@@ -23,6 +23,9 @@ class Tab(val id: Int, val incognito: Boolean, var parentId: Int? = null) {
      */
     var desktopOverride: Boolean? = null
 
+    /** Pré-visualização da página, mostrada na lista de abas (só em memória). */
+    var thumb: android.graphics.Bitmap? = null
+
     /** Bloqueios da página atual desta aba. */
     val blocked = AtomicInteger(0)
     var pageUrl: String? = null

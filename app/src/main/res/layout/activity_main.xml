@@ -11,6 +11,7 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
+        <!-- Barra compacta única: endereço, segundo plano, contador, abas e menu (voltar/avançar/atualizar ficam no menu) -->
         <LinearLayout
             android:id="@+id/top_bar"
             android:layout_width="match_parent"
@@ -19,14 +20,14 @@
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="8dp"
-            android:paddingEnd="8dp"
             android:paddingTop="6dp"
+            android:paddingEnd="2dp"
             android:paddingBottom="6dp">
 
             <EditText
                 android:id="@+id/url_bar"
                 android:layout_width="0dp"
-                android:layout_height="44dp"
+                android:layout_height="40dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_input"
                 android:hint="Pesquisar ou digitar endereço"
@@ -44,32 +45,65 @@
             <TextView
                 android:id="@+id/btn_bg"
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:minWidth="40dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:text="&#x1F3A7;"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/btn_shield"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center"
                 android:minWidth="48dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:text="&#x1F3A7;"
-                android:textSize="20sp" />
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:text="&#x1F6E1; 0"
+                android:textColor="@color/accent"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <FrameLayout
+                android:id="@+id/btn_tabs_box"
+                android:layout_width="44dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <TextView
+                    android:id="@+id/btn_tabs"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_tab_count"
+                    android:gravity="center"
+                    android:text="1"
+                    android:textColor="@color/text"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
 
             <TextView
-                android:id="@+id/btn_shield"
-                android:layout_width="wrap_content"
-                android:layout_height="44dp"
+                android:id="@+id/btn_menu"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center"
-                android:minWidth="64dp"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="&#x1F6E1; 0"
-                android:textColor="@color/accent"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:text="&#8942;"
+                android:textColor="@color/text"
+                android:textSize="22sp" />
         </LinearLayout>
 
         <ProgressBar
@@ -86,11 +120,18 @@
             android:layout_height="0dp"
             android:layout_weight="1">
 
-            <!-- Um WebView por aba, criados pelo código -->
-            <FrameLayout
-                android:id="@+id/web_holder"
+            <!-- Puxar para baixo no topo da página atualiza (como no Chrome) -->
+            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+                android:id="@+id/swipe"
                 android:layout_width="match_parent"
-                android:layout_height="match_parent" />
+                android:layout_height="match_parent">
+
+                <!-- Um WebView por aba, criados pelo código -->
+                <FrameLayout
+                    android:id="@+id/web_holder"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
             <FrameLayout
                 android:id="@+id/start_container"
@@ -115,61 +156,6 @@
                 android:elevation="8dp"
                 android:visibility="gone" />
         </FrameLayout>
-
-        <LinearLayout
-            android:id="@+id/bottom_bar"
-            android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:background="@color/card"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/btn_back"
-                style="@style/NavButton"
-                android:text="&#9664;" />
-
-            <TextView
-                android:id="@+id/btn_forward"
-                style="@style/NavButton"
-                android:text="&#9654;" />
-
-            <TextView
-                android:id="@+id/btn_home"
-                style="@style/NavButton"
-                android:text="&#x1F3E0;" />
-
-            <FrameLayout
-                android:id="@+id/btn_tabs_box"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true">
-
-                <TextView
-                    android:id="@+id/btn_tabs"
-                    android:layout_width="28dp"
-                    android:layout_height="28dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/bg_tab_count"
-                    android:gravity="center"
-                    android:text="1"
-                    android:textColor="@color/text"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
-            </FrameLayout>
-
-            <TextView
-                android:id="@+id/btn_reload"
-                style="@style/NavButton"
-                android:text="&#10227;" />
-
-            <TextView
-                android:id="@+id/btn_menu"
-                style="@style/NavButton"
-                android:text="&#8942;" />
-        </LinearLayout>
     </LinearLayout>
 
     <FrameLayout

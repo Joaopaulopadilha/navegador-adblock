@@ -1,4 +1,4 @@
-﻿package com.pessoal.navegador
+package com.pessoal.navegador
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -32,8 +33,8 @@ import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ProgressBar
+import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -56,14 +57,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var root: FrameLayout
     private lateinit var ui: View
     private lateinit var topBar: LinearLayout
-    private lateinit var bottomBar: View
     private lateinit var urlBar: EditText
     private lateinit var progress: ProgressBar
-    private lateinit var btnBack: TextView
-    private lateinit var btnForward: TextView
-    private lateinit var btnHome: TextView
-    private lateinit var btnReload: TextView
     private lateinit var btnMenu: TextView
+    private lateinit var swipe: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+    private var menuWindow: PopupWindow? = null
     private lateinit var btnShield: TextView
     private lateinit var btnBg: TextView
     private lateinit var btnTabs: TextView
@@ -106,6 +104,7 @@ class MainActivity : ComponentActivity() {
 
     // Tema aplicado nesta tela (para recriar se mudar nas configurações)
     private var appliedTheme = ThemeUtil.SYSTEM
+    private var lastNightMode = 0
 
     // Último endereço mostrado na barra (para distinguir "texto digitado" de "endereço da página")
     private var lastShownUrl = ""
@@ -138,6 +137,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 PlaybackService.ACTION_QUIT_APP -> quitApp()
+                IncognitoNotice.ACTION_CLOSE -> closeAllIncognito()
             }
         }
     }
@@ -149,6 +149,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        alive = true
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
         ThemeUtil.applySystemBars(this)
@@ -156,14 +157,10 @@ class MainActivity : ComponentActivity() {
         root = findViewById(R.id.root)
         ui = findViewById(R.id.browser_ui)
         topBar = findViewById(R.id.top_bar)
-        bottomBar = findViewById(R.id.bottom_bar)
         urlBar = findViewById(R.id.url_bar)
         progress = findViewById(R.id.progress)
-        btnBack = findViewById(R.id.btn_back)
-        btnForward = findViewById(R.id.btn_forward)
-        btnHome = findViewById(R.id.btn_home)
-        btnReload = findViewById(R.id.btn_reload)
         btnMenu = findViewById(R.id.btn_menu)
+        swipe = findViewById(R.id.swipe)
         btnShield = findViewById(R.id.btn_shield)
         btnBg = findViewById(R.id.btn_bg)
         btnTabs = findViewById(R.id.btn_tabs)
@@ -184,6 +181,14 @@ class MainActivity : ComponentActivity() {
 
         settings = Prefs(this)
         appliedTheme = settings.themeMode
+        lastNightMode = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        // Uma orientação travada por uma tela cheia anterior não deve valer numa tela nova
+        // (a tela pode ter ficado em paisagem se o app foi fechado em tela cheia).
+        if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
+            releaseOrientation()
+        } else {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
         adBlocker = AdBlocker(this)
         adBlocker.enabled = settings.adblockDefault
         youtubeScript = assets.open("youtube_adblock.js").bufferedReader().use { it.readText() }
@@ -227,6 +232,7 @@ class MainActivity : ComponentActivity() {
                 addAction(PlaybackService.ACTION_PREV_PAGE)
                 addAction(PlaybackService.ACTION_SEEK_PAGE)
                 addAction(PlaybackService.ACTION_QUIT_APP)
+                addAction(IncognitoNotice.ACTION_CLOSE)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
@@ -295,6 +301,7 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Este WebView não suporta a navegação anônima", Toast.LENGTH_LONG).show()
             return null
         }
+        if (incognito) askNotificationPermissionOnce()
         val t = Tab(TabStore.newId(), incognito, parent?.id)
         if (url != null) {
             t.url = url
@@ -307,6 +314,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun activate(tab: Tab) {
+        if (::active.isInitialized && active !== tab) captureThumb(active) // guarda a prévia da aba que vai sair da tela
         showBars()
         hideTabSwitcher()
         hideUrlSuggestions(clearFocus = true)
@@ -331,7 +339,6 @@ class MainActivity : ComponentActivity() {
         applyIncognitoUi()
         progress.visibility = View.GONE
         updateShield()
-        updateNav()
         updateTabCount()
     }
 
@@ -373,26 +380,91 @@ class MainActivity : ComponentActivity() {
         ).show()
     }
 
+    private fun goBackAction() {
+        when {
+            !active.showStart && canGoBackReal(active) -> active.web?.goBack()
+            closeToParent() -> Unit
+            !active.showStart && settings.homeUrl() == null -> showStart()
+        }
+    }
+
+    private fun goForwardAction() {
+        if (!active.showStart) active.web?.takeIf { it.canGoForward() }?.goForward()
+    }
+
+    private fun reloadAction() {
+        if (active.showStart) startPage.refresh() else active.web?.reload()
+    }
+
+    /** Menu compacto, como o do Chrome: linha de ícones (voltar, avançar, atualizar, início) e os itens abaixo. */
     private fun showMenu() {
+        menuWindow?.dismiss()
         val tab = active
         val host = if (tab.showStart) null else hostOf(tab.web?.url?.takeIf { it != BLANK } ?: tab.url)
         val desktop = host != null && isDesktop(tab, host)
-        val popup = PopupMenu(this, btnMenu)
-        popup.menu.add(0, MENU_DESKTOP, 0, if (desktop) "✓ Site para computador" else "Site para computador")
-            .isEnabled = host != null
-        popup.menu.add(0, MENU_NEW_TAB, 1, "Nova aba")
-        popup.menu.add(0, MENU_NEW_INCOGNITO, 2, "Nova aba anônima")
-        popup.menu.add(0, MENU_SETTINGS, 3, "Configurações")
-        popup.setOnMenuItemClickListener {
-            when (it.itemId) {
-                MENU_DESKTOP -> toggleDesktop()
-                MENU_NEW_TAB -> openNewTab(false)
-                MENU_NEW_INCOGNITO -> openNewTab(true)
-                MENU_SETTINGS -> startActivity(Intent(this, SettingsActivity::class.java))
-            }
-            true
+        val canBack = !tab.showStart && (canGoBackReal(tab) || tab.parentId != null || settings.homeUrl() == null)
+        val canForward = !tab.showStart && tab.web?.canGoForward() == true
+
+        val textColor = ContextCompat.getColor(this, R.color.text)
+        val mutedColor = ContextCompat.getColor(this, R.color.muted)
+        val ripple = android.util.TypedValue().also {
+            theme.resolveAttribute(android.R.attr.selectableItemBackground, it, true)
+        }.resourceId
+
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_popup)
         }
-        popup.show()
+        val win = PopupWindow(col, dp(264), ViewGroup.LayoutParams.WRAP_CONTENT, true)
+        win.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        win.elevation = dp(8).toFloat()
+
+        fun icon(label: String, enabled: Boolean, action: () -> Unit) = TextView(this).apply {
+            text = label
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(textColor)
+            alpha = if (enabled) 1f else 0.35f
+            setBackgroundResource(ripple)
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+            if (enabled) setOnClickListener { win.dismiss(); action() }
+        }
+
+        fun item(label: String, enabled: Boolean = true, action: () -> Unit) = TextView(this).apply {
+            text = label
+            textSize = 16f
+            setTextColor(textColor)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, dp(14), 0)
+            alpha = if (enabled) 1f else 0.4f
+            setBackgroundResource(ripple)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48))
+            if (enabled) setOnClickListener { win.dismiss(); action() }
+        }
+
+        col.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(icon("◀", canBack) { goBackAction() })
+            addView(icon("▶", canForward) { goForwardAction() })
+            addView(icon("⟳", true) { reloadAction() })
+            addView(icon("\uD83C\uDFE0", true) { goHome() })
+        })
+        col.addView(View(this).apply {
+            setBackgroundColor(mutedColor)
+            alpha = 0.3f
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                setMargins(dp(8), dp(4), dp(8), dp(4))
+            }
+        })
+        col.addView(item("Nova aba") { openNewTab(false) })
+        col.addView(item("Nova aba anônima") { openNewTab(true) })
+        col.addView(item(if (desktop) "✓ Site para computador" else "Site para computador", host != null) { toggleDesktop() })
+        col.addView(item("Configurações") { startActivity(Intent(this, SettingsActivity::class.java)) })
+
+        menuWindow = win
+        win.setOnDismissListener { if (menuWindow === win) menuWindow = null }
+        win.showAsDropDown(btnMenu, 0, 0, Gravity.END)
     }
 
     private fun ensureWeb(tab: Tab): BackgroundWebView {
@@ -486,7 +558,17 @@ class MainActivity : ComponentActivity() {
         settings.activeTabIndex = normal.indexOfFirst { it.id == active.id }.coerceAtLeast(0)
     }
 
+    /** Aviso fixo enquanto houver aba anônima aberta; some quando a última for fechada. */
+    private fun updateIncognitoNotice() {
+        if (tabs.any { it.incognito }) IncognitoNotice.show(this) else IncognitoNotice.cancel(this)
+    }
+
+    private fun closeAllIncognito() {
+        tabs.filter { it.incognito }.toList().forEach { closeTab(it) }
+    }
+
     private fun updateTabCount() {
+        updateIncognitoNotice()
         btnTabs.text = if (tabs.size > 99) "99+" else tabs.size.toString()
     }
 
@@ -516,7 +598,6 @@ class MainActivity : ComponentActivity() {
         barsToggledAt = SystemClock.uptimeMillis()
         scrollAccum = 0
         topBar.visibility = View.GONE
-        bottomBar.visibility = View.GONE
     }
 
     private fun showBars() {
@@ -525,10 +606,30 @@ class MainActivity : ComponentActivity() {
         barsToggledAt = SystemClock.uptimeMillis()
         scrollAccum = 0
         topBar.visibility = View.VISIBLE
-        bottomBar.visibility = View.VISIBLE
+    }
+
+    /** Tira uma foto reduzida da aba (a página ou a tela de início) para mostrar na lista de abas. */
+    private fun captureThumb(tab: Tab) {
+        if (tab.incognito) return // abas anônimas não guardam prévia da página
+        if (tab.showStart && tab !== active) return
+        val v: View = if (tab.showStart) startContainer else (tab.web ?: return)
+        if (v.width <= 0 || v.height <= 0 || v.visibility != View.VISIBLE) return
+        try {
+            val w = THUMB_WIDTH
+            val h = (v.height * w / v.width.toFloat()).toInt().coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val c = android.graphics.Canvas(bmp)
+            val scale = w / v.width.toFloat()
+            c.scale(scale, scale)
+            v.draw(c)
+            tab.thumb = bmp
+        } catch (_: Throwable) {
+            // sem prévia: a lista mostra a inicial do site no lugar
+        }
     }
 
     private fun showTabSwitcher() {
+        captureThumb(active)
         showBars()
         hideUrlSuggestions(clearFocus = true)
         tabSwitcher.render(tabs, active.id)
@@ -631,14 +732,12 @@ class MainActivity : ComponentActivity() {
                 ) {
                     view.evaluateJavascript(youtubeScript, null)
                 }
-                if (tab === active) updateNav()
             }
 
             /** O YouTube troca de vídeo sem recarregar a página; essa chamada pega esse caso. */
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
                 newPage(tab, url)
                 showUrl(tab, url)
-                if (tab === active) updateNav()
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -647,7 +746,6 @@ class MainActivity : ComponentActivity() {
                     view.clearHistory()
                 }
                 showUrl(tab, url)
-                if (tab === active) updateNav()
             }
         }
 
@@ -698,24 +796,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupControls() {
-        btnBack.setOnClickListener {
-            when {
-                !active.showStart && canGoBackReal(active) -> active.web?.goBack()
-                closeToParent() -> Unit
-                !active.showStart && settings.homeUrl() == null -> showStart()
-            }
-        }
-        btnForward.setOnClickListener {
-            if (!active.showStart) active.web?.takeIf { it.canGoForward() }?.goForward()
-        }
-        btnHome.setOnClickListener { goHome() }
         btnTabsBox.setOnClickListener {
             if (tabSwitcherBox.visibility == View.VISIBLE) hideTabSwitcher() else showTabSwitcher()
         }
-        btnReload.setOnClickListener {
-            if (active.showStart) startPage.refresh() else active.web?.reload()
-        }
         btnMenu.setOnClickListener { showMenu() }
+
+        // Puxar para baixo no topo da página atualiza.
+        swipe.setColorSchemeResources(R.color.accent)
+        swipe.setProgressBackgroundColorSchemeResource(R.color.card)
+        swipe.setOnChildScrollUpCallback { _, _ -> (active.web?.scrollY ?: 0) > 0 }
+        swipe.setOnRefreshListener {
+            reloadAction()
+            main.postDelayed({ swipe.isRefreshing = false }, 800)
+        }
         btnShield.setOnClickListener {
             adBlocker.enabled = !adBlocker.enabled
             updateShield()
@@ -783,7 +876,6 @@ class MainActivity : ComponentActivity() {
         if (tab === active) {
             startContainer.visibility = View.GONE
             w.visibility = View.VISIBLE
-            updateNav()
         }
     }
 
@@ -803,7 +895,6 @@ class MainActivity : ComponentActivity() {
         mediaPlaying = false
         stopBackgroundService()
         showStartUi(t)
-        updateNav()
     }
 
     private fun showStartUi(t: Tab) {
@@ -844,14 +935,6 @@ class MainActivity : ComponentActivity() {
         val list = w.copyBackForwardList()
         val i = list.currentIndex
         return i > 0 && list.getItemAtIndex(i - 1).url != BLANK
-    }
-
-    private fun updateNav() {
-        val canBack = !active.showStart &&
-            (canGoBackReal(active) || active.parentId != null || settings.homeUrl() == null)
-        btnBack.alpha = if (canBack) 1f else 0.35f
-        val canForward = !active.showStart && active.web?.canGoForward() == true
-        btnForward.alpha = if (canForward) 1f else 0.35f
     }
 
     // ---------- Contador (por página, da aba ativa) ----------
@@ -979,12 +1062,43 @@ class MainActivity : ComponentActivity() {
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         fullscreen.visibility = View.VISIBLE
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        // Vídeo em retrato (ex.: Shorts) fica em retrato, ocupando a tela toda; só o vídeo horizontal gira para paisagem.
+        // O tamanho do vídeo vem da página; se não der para saber, vale paisagem.
+        val web = active.web
+        if (web == null) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            web.evaluateJavascript(VIDEO_SIZE_JS) { result ->
+                if (customView == null) return@evaluateJavascript
+                val size = result.orEmpty().trim('"').split('x')
+                val w = size.getOrNull(0)?.toIntOrNull() ?: 0
+                val h = size.getOrNull(1)?.toIntOrNull() ?: 0
+                if (!(w > 0 && h > w)) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
         }
+    }
+
+    /**
+     * Solta a trava de orientação da tela cheia. Com a rotação automática desligada, só soltar não basta:
+     * o Android deixa a tela em paisagem. Nesse caso volta para retrato e, em seguida, devolve o controle ao sistema.
+     */
+    private fun releaseOrientation() {
+        val autoRotateOff = android.provider.Settings.System.getInt(
+            contentResolver, android.provider.Settings.System.ACCELEROMETER_ROTATION, 1
+        ) == 0
+        if (!autoRotateOff) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            return
+        }
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        main.postDelayed({
+            if (customView == null) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }, 700)
     }
 
     private fun exitFullscreen() {
@@ -995,7 +1109,7 @@ class MainActivity : ComponentActivity() {
         customView = null
         customCallback?.onCustomViewHidden()
         customCallback = null
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        releaseOrientation()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowInsetsControllerCompat(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
     }
@@ -1004,6 +1118,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        captureThumb(active)
         saveTabs()
         // Avisa a página que o app saiu da tela, para ela não deixar o vídeo ser pausado por isso.
         if (bgEnabled) active.web?.evaluateJavascript(BG_ON_JS, null)
@@ -1011,8 +1126,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        // Seguindo o tema do sistema: se o sistema trocou entre claro e escuro, redesenha.
-        if (settings.themeMode == ThemeUtil.SYSTEM) recreate()
+        // Seguindo o tema do sistema: só redesenha se o sistema trocou entre claro e escuro.
+        // Girar a tela também chega aqui e NÃO pode recriar a tela: isso derrubaria a tela cheia do vídeo
+        // e deixaria a orientação presa em paisagem.
+        val night = newConfig.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        if (settings.themeMode == ThemeUtil.SYSTEM && night != lastNightMode) {
+            lastNightMode = night
+            recreate()
+        }
     }
 
     override fun onResume() {
@@ -1028,7 +1149,6 @@ class MainActivity : ComponentActivity() {
         bgEnabled = settings.backgroundPlay
         updateBgButton()
         if (active.showStart) startPage.refresh()
-        updateNav()
     }
 
     /** Botão de volume +: além de subir o volume do aparelho, tira do mudo o vídeo da aba ativa. */
@@ -1054,6 +1174,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        alive = false
         main.removeCallbacksAndMessages(null)
         stopBackgroundService()
         try {
@@ -1076,6 +1197,7 @@ class MainActivity : ComponentActivity() {
         if (quitting) {
             tabs.clear()
             TabStore.activeId = -1
+            IncognitoNotice.cancel(this)
         }
         super.onDestroy()
         // Encerrar de verdade: sem processo sobrando em segundo plano.
@@ -1084,12 +1206,13 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val BLANK = "about:blank"
-        private const val INCOGNITO_PROFILE = "anonima"
-        private const val MENU_DESKTOP = 1
-        private const val MENU_NEW_TAB = 2
-        private const val MENU_NEW_INCOGNITO = 3
-        private const val MENU_SETTINGS = 4
+        const val INCOGNITO_PROFILE = "anonima"
+
+        /** Verdadeiro enquanto a tela principal existe (o receptor do aviso decide por onde fechar as abas anônimas). */
+        @Volatile
+        var alive = false
         private const val MAX_AUDIO_FRAMES = 40
+        private const val THUMB_WIDTH = 360
         private const val PAUSED_KEEP_MS = 10 * 60_000L
 
         // Os botões da notificação são pedidos do usuário: liberam a pausa por um instante.
@@ -1110,6 +1233,14 @@ class MainActivity : ComponentActivity() {
             "(function(){var b=document.querySelector('.ytp-prev-button');" +
                 "if(b&&b.offsetParent!==null&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){b.click();return;}" +
                 "var v=document.querySelector('video');if(v&&v.currentTime>3){v.currentTime=0;return;}history.back();})();"
+        // Largura e altura reais do vídeo que está em tela cheia (ou, se não achar, do que está tocando): "1080x1920".
+        private const val VIDEO_SIZE_JS =
+            "(function(){var f=document.fullscreenElement||document.webkitFullscreenElement;var v=null;" +
+                "if(f){v=f.tagName==='VIDEO'?f:f.querySelector('video');}" +
+                "if(!v){var a=document.querySelectorAll('video');" +
+                "for(var i=0;i<a.length;i++){if(!a[i].paused){v=a[i];break;}}if(!v)v=a[0];}" +
+                "return v?(v.videoWidth+'x'+v.videoHeight):'';})()"
+
         private const val BG_ON_JS = "window.__nvBg=true;window.__nvBgSince=Date.now();window.__nvResumes=0;"
         private const val BG_OFF_JS = "window.__nvBg=false;"
     }
